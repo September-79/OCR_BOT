@@ -20,41 +20,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ جاري قراءة الصورة بذكاء اصطناعي... ثواني")
+    await update.message.reply_text("⏳ جاري القراءة... ثواني")
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         img_bytes = await file.download_as_bytearray()
         img = Image.open(io.BytesIO(img_bytes))
 
+        # صغر الصورة عشان تتبعت أسرع - ده أهم حاجة بتسرع
+        if max(img.size) > 1024:
+            img.thumbnail((1024, 1024))
+
         # جوجل سمح بس بموديلات 3.x للمستخدمين الجدد
         models = [
             "gemini-3.8-flash",
             "gemini-3-flash-preview",
-            "gemini-3-pro-preview",
-            "gemini-3.8-flash-preview",
         ]
 
         text = None
-        last_error = ""
 
         for model in models:
-            for attempt in range(3):  # جرب نفس الموديل 3 مرات
+            for attempt in range(2):  # مرتين بس مش 3
                 try:
                     response = client.models.generate_content(
                         model=model,
                         contents=[
-                            "استخرج كل النص الموجود في هذه الصورة بالظبط كما هو، بدون أي شرح إضافي. حافظ على اللغة الأصلية والترتيب. لو مفيش نص، قول: لا يوجد نص.",
+                            "استخرج النص من الصورة بالظبط، بدون شرح.",
                             img
                         ]
                     )
                     text = response.text.strip()
                     break
                 except Exception as e:
-                    last_error = str(e)
-                    # لو زحمة 503 استنى 5 ثواني وجرب تاني
+                    # لو زحمة 503 استنى ثانيتين بس وجرب تاني
                     if "503" in str(e) or "UNAVAILABLE" in str(e) or "overloaded" in str(e).lower():
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(2)
                         continue
                     break
             if text:
@@ -63,7 +63,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text:
             await update.message.reply_text(f"✅ النص:\n\n{text}")
         else:
-            await update.message.reply_text("❌ جوجل مضغوط دلوقتي، استنى دقيقتين وابعت الصورة تاني.")
+            await update.message.reply_text("❌ جوجل مضغوط دلوقتي، جرب تاني بعد دقيقة.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ حصل خطأ: {e}")
