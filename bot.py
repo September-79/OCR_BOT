@@ -1,23 +1,17 @@
 import os
 import io
-import asyncio
-import numpy as np
+import requests
 from PIL import Image
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
-# OCR - بيشتغل عندك مش عند جوجل، فمفيش زحمة
-import easyocr
-
-print("⏳ جاري تحميل محرك القراءة... أول مرة بس هتاخد دقيقة")
-reader = easyocr.Reader(['ar', 'en'], gpu=False, verbose=False)
-print("✅ محرك القراءة جاهز")
-
-# Gemini احتياطي بس
 from google import genai
-GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+
+# OCR.space - مجاني وخفيف، مش بيحتاج تحميل
+OCR_API_KEY = "helloworld"  # مفتاح مجاني تجريبي، شغال على طول
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -26,13 +20,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "بيدعم العربي والإنجليزي."
     )
 
-def ocr_read(img_pil):
-    # EasyOCR بيحتاج numpy
-    img_np = np.array(img_pil.convert("RGB"))
-    results = reader.readtext(img_np, paragraph=True)
-    # رتب من فوق لتحت
-    texts = [t for _, t, _ in results]
-    return "\n".join(texts).strip()
+def ocr_space(img_bytes):
+    """قراءة سريعة بـ OCR.space - زي البوت التاني بالظبط"""
+    try:
+        r = requests.post(
+            "https://api.ocr.space/parse/image",
+            files={"file": ("image.jpg", img_bytes, "image/jpeg")},
+            data={
+                "apikey": OCR_API_KEY,
+                "language": "ara",  # عربي
+                "isOverlayRequired": False,
+                "scale": True,
+                "OCREngine": 2,  # المحرك الجديد الأسرع
+            },
+            timeout=30
+        )
+        data = r.json()
+        if data.get("ParsedResults"):
+            text = data["ParsedResults"][0].get("ParsedText", "").strip()
+            return text
+    except Exception as e:
+        print(f"OCR.space error: {e}")
+    return ""
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ جاري القراءة... ثواني")
@@ -42,10 +51,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img_bytes = await file.download_as_bytearray()
         img = Image.open(io.BytesIO(img_bytes))
 
-        # 1. جرب OCR الأول - ده السريع زي البوت التاني
-        text = await asyncio.to_thread(ocr_read, img)
+        # 1. جرب OCR.space الأول - سريع وخفيف
+        text = ocr_space(bytes(img_bytes))
 
-        # 2. لو OCR معرفش يقرأ، جرب Gemini احتياطي
+        # لو النص طلع إنجليزي بس أو فاضي، جرب تاني بالإنجليزي
+        if not text:
+            try:
+                r = requests.post(
+                    "https://api.ocr.space/parse/image",
+                    files={"file": ("image.jpg", bytes(img_bytes), "image/jpeg")},
+                    data={"apikey": OCR_API_KEY, "language": "eng", "OCREngine": 2},
+                    timeout=30
+                )
+                text = r.json()["ParsedResults"][0]["ParsedText"].strip()
+            except:
+                pass
+
+        # 2. لو OCR معرفش، جرب Gemini احتياطي
         if not text and client:
             try:
                 response = client.models.generate_content(
@@ -59,7 +81,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text:
             await update.message.reply_text(f"✅ النص:\n\n{text}")
         else:
-            await update.message.reply_text("❌ معرفتش أقرأ النص في الصورة دي، جرب صورة أوضح.")
+            await update.message.reply_text("❌ معرفتش أقرأ النص، جرب صورة أوضح.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ حصل خطأ: {e}")
