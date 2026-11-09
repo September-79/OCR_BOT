@@ -1,7 +1,7 @@
 import os
 import io
-import requests
-from PIL import Image
+import numpy as np
+from PIL import Image, ImageOps
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from google import genai
@@ -10,8 +10,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os
 GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
-# OCR.space - مجاني وخفيف، مش بيحتاج تحميل
-OCR_API_KEY = "helloworld"  # مفتاح مجاني تجريبي، شغال على طول
+# RapidOCR - خفيف 40 ميجا بس، وبيشتغل عندك مش عند جوجل
+from rapidocr_onnxruntime import RapidOCR
+engine = RapidOCR()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -20,27 +21,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "بيدعم العربي والإنجليزي."
     )
 
-def ocr_space(img_bytes):
-    """قراءة سريعة بـ OCR.space - زي البوت التاني بالظبط"""
-    try:
-        r = requests.post(
-            "https://api.ocr.space/parse/image",
-            files={"file": ("image.jpg", img_bytes, "image/jpeg")},
-            data={
-                "apikey": OCR_API_KEY,
-                "language": "ara",  # عربي
-                "isOverlayRequired": False,
-                "scale": True,
-                "OCREngine": 2,  # المحرك الجديد الأسرع
-            },
-            timeout=30
-        )
-        data = r.json()
-        if data.get("ParsedResults"):
-            text = data["ParsedResults"][0].get("ParsedText", "").strip()
-            return text
-    except Exception as e:
-        print(f"OCR.space error: {e}")
+def read_with_rapid(img_pil):
+    # لو الخلفية سودا والنص أبيض، اقلبها عشان الـ OCR يقراها
+    # دي كانت مشكلة صورتك
+    img = img_pil.convert("RGB")
+    # جرب الصورة الأصلية
+    for test_img in [img, ImageOps.invert(img)]:
+        result, _ = engine(np.array(test_img))
+        if result:
+            # رتب من فوق لتحت
+            result = sorted(result, key=lambda x: x[1][0][1])
+            text = "\n".join([t[1] for t in result]).strip()
+            if len(text) > 2:
+                return text
     return ""
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -51,23 +44,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img_bytes = await file.download_as_bytearray()
         img = Image.open(io.BytesIO(img_bytes))
 
-        # 1. جرب OCR.space الأول - سريع وخفيف
-        text = ocr_space(bytes(img_bytes))
+        # 1. RapidOCR الأول - سريع زي البوت التاني
+        text = read_with_rapid(img)
 
-        # لو النص طلع إنجليزي بس أو فاضي، جرب تاني بالإنجليزي
-        if not text:
-            try:
-                r = requests.post(
-                    "https://api.ocr.space/parse/image",
-                    files={"file": ("image.jpg", bytes(img_bytes), "image/jpeg")},
-                    data={"apikey": OCR_API_KEY, "language": "eng", "OCREngine": 2},
-                    timeout=30
-                )
-                text = r.json()["ParsedResults"][0]["ParsedText"].strip()
-            except:
-                pass
-
-        # 2. لو OCR معرفش، جرب Gemini احتياطي
+        # 2. لو معرفش، Gemini احتياطي مرة واحدة بس
         if not text and client:
             try:
                 response = client.models.generate_content(
