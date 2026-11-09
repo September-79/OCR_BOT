@@ -13,13 +13,10 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
-print(f"Groq key موجود؟ {'ايوه' if GROQ_KEY else 'لا - مش موجود في FadeHost!'}")
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 أهلاً بيك!\n\nابعتلي أي صورة.")
 
 def compress_image(img_bytes):
-    # صغر الصورة عشان Groq يقبلها بسرعة
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     if max(img.size) > 800:
         img.thumbnail((800, 800))
@@ -28,9 +25,9 @@ def compress_image(img_bytes):
     return buf.getvalue(), img
 
 def call_groq(img_bytes):
-    # جرب موديلين، لو واحد وقف التاني يشتغل
+    # الموديلات الجديدة اللي شغالة في Groq دلوقتي - مش Llama
     b64 = base64.b64encode(img_bytes).decode()
-    for model in ["meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct", "llama-3.2-90b-vision-preview"]:
+    for model in ["qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "qwen/qwen3-vl-32b-instruct"]:
         try:
             r = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -50,7 +47,7 @@ def call_groq(img_bytes):
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"].strip()
             else:
-                print(f"Groq error body: {r.text[:500]}")
+                print(f"Groq error: {r.text[:400]}")
         except Exception as e:
             print(f"Groq {model} exception: {e}")
     return None
@@ -71,7 +68,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img_bytes = await file.download_as_bytearray()
         small_bytes, img = compress_image(bytes(img_bytes))
 
-        # Groq الأول عشان هو الأسرع
         text = await asyncio.to_thread(call_groq, small_bytes)
         if not text:
             text = await asyncio.to_thread(call_gemini, img)
@@ -79,12 +75,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text:
             await update.message.reply_text(f"✅ النص:\n\n{text}")
         else:
-            # دي رسالة تشخيص، مش رسالة ضغط وخلاص
-            if not GROQ_KEY:
-                await update.message.reply_text("❌ المشكلة: مفيش GROQ_API_KEY في FadeHost!\n\nروح FadeHost > Variables > ضيف GROQ_API_KEY وبعدين Redeploy.")
-            else:
-                await update.message.reply_text("❌ Groq و Gemini فشلوا.\nافتح FadeHost > Logs وشوف مكتوب Groq error ايه، وابعتلي سكرين شوت.")
-
+            await update.message.reply_text("❌ فشل، جرب تاني.")
     except Exception as e:
         await update.message.reply_text(f"❌ حصل خطأ: {e}")
 
