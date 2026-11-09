@@ -24,7 +24,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img = Image.open(io.BytesIO(img_bytes))
 
         response = client.models.generate_content(
-            model="gemini-3.8-flash",
+            model="gemini-2.5-flash",
             contents=[
                 "استخرج كل النص الموجود في هذه الصورة بالظبط كما هو، بدون أي شرح إضافي. حافظ على اللغة الأصلية والترتيب. لو مفيش نص، قول: لا يوجد نص.",
                 img
