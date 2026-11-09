@@ -6,7 +6,6 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from google import genai
 
-# المفتاح بيجي من FadeHost - بنجرب الاسمين عشان ميوقفش تاني
 GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN")
 
@@ -20,27 +19,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ جاري القراءة... ثواني")
+    status_msg = await update.message.reply_text("⏳ جاري القراءة... ممكن تاخد دقيقة عشان جوجل زحمة")
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         img_bytes = await file.download_as_bytearray()
         img = Image.open(io.BytesIO(img_bytes))
 
-        # صغر الصورة عشان تتبعت أسرع - ده أهم حاجة بتسرع
+        # صغر الصورة عشان تتبعت أسرع
         if max(img.size) > 1024:
             img.thumbnail((1024, 1024))
 
-        # جوجل سمح بس بموديلات 3.x للمستخدمين الجدد
+        # الترتيب ده مهم: 3.8 الأول، وبعدين الـ Pro اللي عليه ضغط أقل
         models = [
             "gemini-3.8-flash",
             "gemini-3-flash-preview",
+            "gemini-3-pro-preview",
         ]
 
         text = None
 
         for model in models:
-            for attempt in range(2):  # مرتين بس مش 3
+            for attempt in range(3):
                 try:
                     response = client.models.generate_content(
                         model=model,
@@ -52,9 +52,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text = response.text.strip()
                     break
                 except Exception as e:
-                    # لو زحمة 503 استنى ثانيتين بس وجرب تاني
-                    if "503" in str(e) or "UNAVAILABLE" in str(e) or "overloaded" in str(e).lower():
-                        await asyncio.sleep(2)
+                    err = str(e)
+                    if "503" in err or "UNAVAILABLE" in err or "overloaded" in err.lower():
+                        # استنى 10 ثواني، عشان جوجل يفضى
+                        await asyncio.sleep(10)
                         continue
                     break
             if text:
@@ -63,7 +64,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text:
             await update.message.reply_text(f"✅ النص:\n\n{text}")
         else:
-            await update.message.reply_text("❌ جوجل مضغوط دلوقتي، جرب تاني بعد دقيقة.")
+            await update.message.reply_text("❌ جوجل مضغوط دلوقتي، جرب تاني بعد دقيقتين.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ حصل خطأ: {e}")
