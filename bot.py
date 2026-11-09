@@ -1,70 +1,65 @@
 import os
 import io
 import asyncio
+import numpy as np
 from PIL import Image
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from google import genai
 
+# OCR - بيشتغل عندك مش عند جوجل، فمفيش زحمة
+import easyocr
+
+print("⏳ جاري تحميل محرك القراءة... أول مرة بس هتاخد دقيقة")
+reader = easyocr.Reader(['ar', 'en'], gpu=False, verbose=False)
+print("✅ محرك القراءة جاهز")
+
+# Gemini احتياطي بس
+from google import genai
 GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN")
-
-client = genai.Client(api_key=GEMINI_KEY)
+client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 أهلاً بيك!\n\n"
-        "ابعتلي أي صورة فيها نص، وهقراهولك بالظبط.\n"
+        "ابعتلي أي صورة فيها نص، وهقراهولك في ثواني.\n"
         "بيدعم العربي والإنجليزي."
     )
 
+def ocr_read(img_pil):
+    # EasyOCR بيحتاج numpy
+    img_np = np.array(img_pil.convert("RGB"))
+    results = reader.readtext(img_np, paragraph=True)
+    # رتب من فوق لتحت
+    texts = [t for _, t, _ in results]
+    return "\n".join(texts).strip()
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("⏳ جاري القراءة... ممكن تاخد دقيقة عشان جوجل زحمة")
+    await update.message.reply_text("⏳ جاري القراءة... ثواني")
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         img_bytes = await file.download_as_bytearray()
         img = Image.open(io.BytesIO(img_bytes))
 
-        # صغر الصورة عشان تتبعت أسرع
-        if max(img.size) > 1024:
-            img.thumbnail((1024, 1024))
+        # 1. جرب OCR الأول - ده السريع زي البوت التاني
+        text = await asyncio.to_thread(ocr_read, img)
 
-        # الترتيب ده مهم: 3.8 الأول، وبعدين الـ Pro اللي عليه ضغط أقل
-        models = [
-            "gemini-3.8-flash",
-            "gemini-3-flash-preview",
-            "gemini-3-pro-preview",
-        ]
-
-        text = None
-
-        for model in models:
-            for attempt in range(3):
-                try:
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=[
-                            "استخرج النص من الصورة بالظبط، بدون شرح.",
-                            img
-                        ]
-                    )
-                    text = response.text.strip()
-                    break
-                except Exception as e:
-                    err = str(e)
-                    if "503" in err or "UNAVAILABLE" in err or "overloaded" in err.lower():
-                        # استنى 10 ثواني، عشان جوجل يفضى
-                        await asyncio.sleep(10)
-                        continue
-                    break
-            if text:
-                break
+        # 2. لو OCR معرفش يقرأ، جرب Gemini احتياطي
+        if not text and client:
+            try:
+                response = client.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=["استخرج النص من الصورة بالظبط، بدون شرح.", img]
+                )
+                text = response.text.strip()
+            except:
+                pass
 
         if text:
             await update.message.reply_text(f"✅ النص:\n\n{text}")
         else:
-            await update.message.reply_text("❌ جوجل مضغوط دلوقتي، جرب تاني بعد دقيقتين.")
+            await update.message.reply_text("❌ معرفتش أقرأ النص في الصورة دي، جرب صورة أوضح.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ حصل خطأ: {e}")
@@ -76,10 +71,6 @@ def main():
     if not TELEGRAM_TOKEN:
         print("❌ مفيش TELEGRAM_BOT_TOKEN")
         return
-    if not GEMINI_KEY:
-        print("❌ مفيش GEMINI_API_KEY")
-        return
-
     print("✅ البوت شغال...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
