@@ -13,43 +13,54 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
+print(f"Groq key موجود؟ {'ايوه' if GROQ_KEY else 'لا - مش موجود في FadeHost!'}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 أهلاً بيك!\n\nابعتلي أي صورة، وهقراهالك في ثواني.")
+    await update.message.reply_text("👋 أهلاً بيك!\n\nابعتلي أي صورة.")
+
+def compress_image(img_bytes):
+    # صغر الصورة عشان Groq يقبلها بسرعة
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    if max(img.size) > 800:
+        img.thumbnail((800, 800))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return buf.getvalue(), img
 
 def call_groq(img_bytes):
-    # Groq - سريع جداً، 2-5 ثواني، مش بيقول مضغوط
-    try:
-        b64 = base64.b64encode(img_bytes).decode()
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "استخرج النص من الصورة بالظبط، بدون شرح، بنفس الترتيب."},
+    # جرب موديلين، لو واحد وقف التاني يشتغل
+    b64 = base64.b64encode(img_bytes).decode()
+    for model in ["meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct", "llama-3.2-90b-vision-preview"]:
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": "استخرج النص من الصورة بالظبط، بدون شرح."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                    ]
-                }],
-                "max_tokens": 500,
-                "temperature": 0
-            },
-            timeout=40
-        )
-        return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"Groq error: {e}")
-        return None
+                    ]}],
+                    "max_tokens": 500,
+                    "temperature": 0
+                },
+                timeout=40
+            )
+            print(f"Groq {model} -> {r.status_code}")
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+            else:
+                print(f"Groq error body: {r.text[:500]}")
+        except Exception as e:
+            print(f"Groq {model} exception: {e}")
+    return None
 
 def call_gemini(img):
     try:
-        r = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=["استخرج النص من الصورة بالظبط، بدون شرح.", img]
-        )
+        r = client.models.generate_content(model="gemini-3.8-flash", contents=["استخرج النص من الصورة بالظبط، بدون شرح.", img])
         return r.text.strip()
-    except:
+    except Exception as e:
+        print(f"Gemini error: {e}")
         return None
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,28 +69,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         img_bytes = await file.download_as_bytearray()
-        img = Image.open(io.BytesIO(img_bytes))
-        if max(img.size) > 1024:
-            img.thumbnail((1024, 1024))
+        small_bytes, img = compress_image(bytes(img_bytes))
 
-        # شغل Groq و Gemini في نفس الوقت، وخد أول واحد ينجح بجد مش أول واحد يخلص
-        tasks = [
-            asyncio.to_thread(call_groq, bytes(img_bytes)),
-            asyncio.to_thread(call_gemini, img),
-        ]
-        # استنى 55 ثانية بالكتير
-        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=55)
-
-        text = None
-        for res in results:
-            if isinstance(res, str) and len(res.strip()) > 1:
-                text = res.strip()
-                break
+        # Groq الأول عشان هو الأسرع
+        text = await asyncio.to_thread(call_groq, small_bytes)
+        if not text:
+            text = await asyncio.to_thread(call_gemini, img)
 
         if text:
             await update.message.reply_text(f"✅ النص:\n\n{text}")
         else:
-            await update.message.reply_text("❌ حصل ضغط، جرب تاني بعد 10 ثواني.")
+            # دي رسالة تشخيص، مش رسالة ضغط وخلاص
+            if not GROQ_KEY:
+                await update.message.reply_text("❌ المشكلة: مفيش GROQ_API_KEY في FadeHost!\n\nروح FadeHost > Variables > ضيف GROQ_API_KEY وبعدين Redeploy.")
+            else:
+                await update.message.reply_text("❌ Groq و Gemini فشلوا.\nافتح FadeHost > Logs وشوف مكتوب Groq error ايه، وابعتلي سكرين شوت.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ حصل خطأ: {e}")
