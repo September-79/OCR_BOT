@@ -1,6 +1,7 @@
 import os
 import io
 import asyncio
+import base64
 import requests
 from PIL import Image
 from telegram import Update
@@ -9,36 +10,50 @@ from google import genai
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
+GROQ_KEY = os.getenv("GROQ_API_KEY")
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 أهلاً بيك!\n\nابعتلي أي صورة، وهقراهالك في أقل من دقيقة.")
+    await update.message.reply_text("👋 أهلاً بيك!\n\nابعتلي أي صورة، وهقراهالك في ثواني.")
 
-def call_gemini(model, img):
+def call_groq(img_bytes):
+    # Groq - سريع جداً، 2-5 ثواني، مش بيقول مضغوط
+    try:
+        b64 = base64.b64encode(img_bytes).decode()
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "استخرج النص من الصورة بالظبط، بدون شرح، بنفس الترتيب."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                    ]
+                }],
+                "max_tokens": 500,
+                "temperature": 0
+            },
+            timeout=40
+        )
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"Groq error: {e}")
+        return None
+
+def call_gemini(img):
     try:
         r = client.models.generate_content(
-            model=model,
+            model="gemini-3.8-flash",
             contents=["استخرج النص من الصورة بالظبط، بدون شرح.", img]
         )
         return r.text.strip()
     except:
         return None
 
-def call_ocr_space(img_bytes):
-    try:
-        r = requests.post(
-            "https://api.ocr.space/parse/image",
-            files={"file": ("img.jpg", img_bytes, "image/jpeg")},
-            data={"apikey": "helloworld", "language": "ara", "OCREngine": 2, "scale": True},
-            timeout=25
-        )
-        t = r.json()["ParsedResults"][0]["ParsedText"].strip()
-        return t if len(t) > 2 else None
-    except:
-        return None
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ جاري القراءة... أقل من دقيقة")
+    await update.message.reply_text("⏳ جاري القراءة... ثواني")
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
@@ -47,50 +62,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if max(img.size) > 1024:
             img.thumbnail((1024, 1024))
 
-        # شغل 3 محاولات في نفس الوقت، مش ورا بعض
-        # اللي يخلص الأول هناخده ونلغي الباقي
+        # شغل Groq و Gemini في نفس الوقت، وخد أول واحد ينجح بجد مش أول واحد يخلص
         tasks = [
-            asyncio.to_thread(call_gemini, "gemini-3.8-flash", img),
-            asyncio.to_thread(call_gemini, "gemini-3-flash-preview", img),
-            asyncio.to_thread(call_ocr_space, bytes(img_bytes)),
+            asyncio.to_thread(call_groq, bytes(img_bytes)),
+            asyncio.to_thread(call_gemini, img),
         ]
+        # استنى 55 ثانية بالكتير
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=55)
 
         text = None
-        # استنى 55 ثانية بالكتير، وبعدها وقف كله
-        done, pending = await asyncio.wait(
-            [asyncio.create_task(t) for t in tasks],
-            timeout=55,
-            return_when=asyncio.FIRST_COMPLETED
-        )
-
-        for d in done:
-            try:
-                res = d.result()
-                if res:
-                    text = res
-                    break
-            except:
-                pass
-
-        # لو أول واحد فشل، استنى الباقي شوية
-        if not text:
-            for p in pending:
-                try:
-                    res = await asyncio.wait_for(p, timeout=10)
-                    if res:
-                        text = res
-                        break
-                except:
-                    pass
-
-        # الغي اللي لسه شغال
-        for p in pending:
-            p.cancel()
+        for res in results:
+            if isinstance(res, str) and len(res.strip()) > 1:
+                text = res.strip()
+                break
 
         if text:
             await update.message.reply_text(f"✅ النص:\n\n{text}")
         else:
-            await update.message.reply_text("❌ جوجل مضغوط، جرب تاني بعد دقيقة.")
+            await update.message.reply_text("❌ حصل ضغط، جرب تاني بعد 10 ثواني.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ حصل خطأ: {e}")
