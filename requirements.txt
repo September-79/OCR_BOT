@@ -1,3 +1,5 @@
 python-telegram-bot==21.4
-Pillow>=11.0
+Pillow
+numpy
+easyocr
 google-genai
